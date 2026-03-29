@@ -9,9 +9,8 @@ r = 0.05 #radio del robot, para calcular el angulo de ataque del lider
 
 n = math.ceil(math.acos(umbral/math.sqrt(umbral**2+r**2))*180/math.pi) #redondeo por arriba para poder iterar las n medidas
 l_medida = []
-
-distancia_min = float('inf')
 l_umbral = []
+
 for i in range(n):
     l_umbral.append(umbral/math.cos(math.radians(i)))
     print(l_umbral)
@@ -19,7 +18,6 @@ l_umbral = l_umbral + l_umbral[::-1]
 
 
 def detecta(msg):
-    global distancia_min
     global l_medida
     l_medida = msg.ranges[:n] + msg.ranges[-n:]
 
