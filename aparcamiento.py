@@ -7,21 +7,19 @@ from nav_msgs.msg import Odometry
 from tf.transformations import euler_from_quaternion
 import math
 
+
+# -------- PARAMETROS --------
 umbral_frontal = 0.3
 umbral_lateral = 0.3
-
 r = 0.10
 
-lado = "derecha"   # "derecha" o "izquierda"
-
-vel_lineal = 0.2
-vel_angular = 0.5
+lado = "izquierda"   # o "derecha"
 
 
+# -------- CALCULO FRONTAL --------
 n_f = math.ceil(
     math.acos(
-        umbral_frontal /
-        math.sqrt(umbral_frontal**2 + r**2)
+        umbral_frontal / math.sqrt(umbral_frontal**2 + r**2)
     ) * 180 / math.pi
 )
 
@@ -35,11 +33,10 @@ for i in range(n_f):
 l_umbral_f = l_umbral_f + l_umbral_f[::-1]
 
 
-
+# -------- CALCULO LATERAL --------
 n_l = math.ceil(
     math.acos(
-        umbral_lateral /
-        math.sqrt(umbral_lateral**2 + r**2)
+        umbral_lateral / math.sqrt(umbral_lateral**2 + r**2)
     ) * 180 / math.pi
 )
 
@@ -53,126 +50,54 @@ for i in range(n_l):
 l_umbral_l = l_umbral_l + l_umbral_l[::-1]
 
 
-
+# -------- VARIABLES --------
 l_medida = [0] * 360
-
 yaw_actual = 0.0
-
-x_actual = 0.0
-y_actual = 0.0
-
-v_linear = 0.0
-v_angular = 0.0
+pos_actual = [0.0, 0.0] 
 
 estado = "BUSCAR"
 
 yaw_inicio = None
-
 t_inicio = 0
 
-x_inicio_entrada = None
-y_inicio_entrada = None
+# Variables nuevas para distancia
+pos_inicio_entrar = [0.0, 0.0]
+distancia_recorrida_entrar = 0.0
+pos_inicio_salir = [0.0, 0.0]
 
-distancia_aparcado = 0.0
 
-
-
+# -------- CALLBACKS --------
 def scan_callback(msg):
-
     global l_medida
-
     l_medida = msg.ranges
 
 
-
 def odom_callback(msg):
-
-    global yaw_actual
-
-    global x_actual
-    global y_actual
-
-    global v_linear
-    global v_angular
-
+    global yaw_actual, pos_actual
+    
+    pos_actual = [msg.pose.pose.position.x, msg.pose.pose.position.y]
     q = msg.pose.pose.orientation
-
-    x_actual = msg.pose.pose.position.x
-    y_actual = msg.pose.pose.position.y
-
-    v_linear = msg.twist.twist.linear.x
-    v_angular = msg.twist.twist.angular.z
-
     (_, _, yaw_actual) = euler_from_quaternion(
         [q.x, q.y, q.z, q.w]
     )
 
 
-
-def norm(a):
-
-    return math.atan2(
-        math.sin(a),
-        math.cos(a)
-    )
-
-
-
-def distancia(x1, y1, x2, y2):
-
-    return math.sqrt(
-        (x2 - x1)**2 +
-        (y2 - y1)**2
-    )
-
-
-def debug_estado(nombre_estado):
-
-    rospy.loginfo(
-        f"[{nombre_estado}] "
-        f"x={x_actual:.2f}  "
-        f"y={y_actual:.2f}  "
-        f"yaw={math.degrees(yaw_actual):.1f}deg  "
-        f"v={v_linear:.2f}m/s  "
-        f"w={v_angular:.2f}rad/s"
-    )
-
-
-
+# -------- MAIN --------
 def parking():
 
     global estado
-
     global yaw_inicio
-
     global t_inicio
-
-    global x_inicio_entrada
-    global y_inicio_entrada
-
-    global distancia_aparcado
+    global pos_inicio_entrar, distancia_recorrida_entrar, pos_inicio_salir
 
     rospy.init_node("parking_2umbrales")
 
-    rospy.Subscriber(
-        "/scan",
-        LaserScan,
-        scan_callback
-    )
+    rospy.Subscriber("/scan", LaserScan, scan_callback)
+    rospy.Subscriber("/odom", Odometry, odom_callback)
 
-    rospy.Subscriber(
-        "/odom",
-        Odometry,
-        odom_callback
-    )
+    pub = rospy.Publisher("/cmd_vel", Twist, queue_size=1)
 
-    pub = rospy.Publisher(
-        "/cmd_vel",
-        Twist,
-        queue_size=1
-    )
-
-    rate = rospy.Rate(5)
+    rate = rospy.Rate(10)
 
     rospy.sleep(1)
 
@@ -180,225 +105,129 @@ def parking():
 
         t = Twist()
 
-
-        frontal = (
-            l_medida[-n_f:] +
-            l_medida[:n_f]
-        )
+        # -------- ABANICOS --------
+        frontal = l_medida[-n_f:] + l_medida[:n_f]
 
         if lado == "derecha":
-
-            lateral = l_medida[
-                270 - n_l:
-                270 + n_l
-            ]
-
+            lateral = l_medida[270 - n_l:270 + n_l]
         else:
+            lateral = l_medida[90 - n_l:90 + n_l]
 
-            lateral = l_medida[
-                90 - n_l:
-                90 + n_l
-            ]
-
-
+        # -------- DETECCION --------
         obstaculo_frontal = False
+        hueco_lateral = True
 
+        # --- FRONTAL ---
         for i in range(len(frontal)):
-
             d = frontal[i]
-
             if d == 0.0 or math.isinf(d):
                 continue
-
             if d < l_umbral_f[i]:
-
                 obstaculo_frontal = True
                 break
 
-
-
-        hueco_lateral = True
-
+        # --- LATERAL ---
         fallos = 0
         total = 0
-
         for i in range(len(lateral)):
-
             d = lateral[i]
-
             if d == 0.0 or math.isinf(d):
                 continue
-
             total += 1
-
             if d < l_umbral_l[i]:
                 fallos += 1
 
         if total > 0:
-
-            hueco_lateral = (
-                fallos < 0.3 * total
-            )
-
+            hueco_lateral = fallos < 0.3 * total
         else:
-
             hueco_lateral = False
 
+        # -------- NORMALIZAR ANGULO --------
+        def norm(a):
+            return math.atan2(math.sin(a), math.cos(a))
 
-        # BUSCAR
-
+        # -------- MAQUINA DE ESTADOS --------
         if estado == "BUSCAR":
-
-            debug_estado("BUSCAR")
-
-            t.linear.x = vel_lineal
-
+            rospy.loginfo("Avanzando")
+            t.linear.x = 0.2
             if hueco_lateral:
-
                 rospy.loginfo("Hueco detectado")
-
                 estado = "GIRAR"
-
                 yaw_inicio = None
-
-
-        # GIRAR
 
         elif estado == "GIRAR":
-
-            debug_estado("GIRAR")
-
-            t.linear.x = 0.0
-
+            rospy.loginfo("Girando")
+            t.linear.x = 0
             if yaw_inicio is None:
                 yaw_inicio = yaw_actual
-
-            if lado == "derecha":
-                t.angular.z = -vel_angular
-            else:
-                t.angular.z = vel_angular
-
-            error = norm(
-                yaw_actual - yaw_inicio
-            )
+            
+            t.angular.z = -0.5 if lado == "derecha" else 0.5
+            error = norm(yaw_actual - yaw_inicio)
 
             if abs(error) >= math.radians(90):
-
                 estado = "ENTRAR"
-
-                x_inicio_entrada = None
-                y_inicio_entrada = None
-
-
-        # ENTRAR
+            
+                pos_inicio_entrar = [pos_actual[0], pos_actual[1]]
 
         elif estado == "ENTRAR":
-
-            debug_estado("ENTRAR")
-
-            t.linear.x = vel_lineal
-
-            if x_inicio_entrada is None:
-
-                x_inicio_entrada = x_actual
-                y_inicio_entrada = y_actual
-
+            rospy.loginfo("Aparcando")
+            t.linear.x = 0.2
             if obstaculo_frontal:
 
-                distancia_aparcado = distancia(
-                    x_inicio_entrada,
-                    y_inicio_entrada,
-                    x_actual,
-                    y_actual
+                distancia_recorrida_entrar = math.sqrt(
+                    (pos_actual[0] - pos_inicio_entrar[0])**2 + 
+                    (pos_actual[1] - pos_inicio_entrar[1])**2
                 )
-
-                rospy.loginfo(
-                    f"Distancia aparcado: "
-                    f"{distancia_aparcado:.2f} m"
-                )
-
                 estado = "ESPERAR"
-
                 t_inicio = rospy.Time.now().to_sec()
 
-        # ESPERAR
-
         elif estado == "ESPERAR":
-
-            debug_estado("ESPERAR")
-
-            if (
-                rospy.Time.now().to_sec() - t_inicio
-            ) > 2:
-
+            if rospy.Time.now().to_sec() - t_inicio > 2:
                 estado = "SALIR"
-
-
-        # SALIR
+                pos_inicio_salir = [pos_actual[0], pos_actual[1]]
 
         elif estado == "SALIR":
-
-            debug_estado("SALIR")
-
-            t.linear.x = -vel_lineal
-
-            distancia_salida = distancia(
-                x_actual,
-                y_actual,
-                x_inicio_entrada,
-                y_inicio_entrada
+            rospy.loginfo("Saliendo")
+            t.linear.x = -0.2
+            
+   
+            distancia_retrocedida = math.sqrt(
+                (pos_actual[0] - pos_inicio_salir[0])**2 + 
+                (pos_actual[1] - pos_inicio_salir[1])**2
             )
 
-            rospy.loginfo(
-                f"Salida: "
-                f"{distancia_salida:.2f} / "
-                f"{distancia_aparcado:.2f}"
-            )
-
-            if distancia_salida >= distancia_aparcado:
-
+  
+            if distancia_retrocedida >= distancia_recorrida_entrar:
                 estado = "REORIENTAR"
-
                 yaw_inicio = None
 
-
-        # REORIENTAR
-
         elif estado == "REORIENTAR":
-
-            debug_estado("REORIENTAR")
-
+            rospy.loginfo("Girando")
             t.linear.x = 0.0
-
             if yaw_inicio is None:
                 yaw_inicio = yaw_actual
-
-            if lado == "derecha":
-                t.angular.z = vel_angular
-            else:
-                t.angular.z = -vel_angular
-
-            error = norm(
-                yaw_actual - yaw_inicio
-            )
-
+            t.angular.z = 0.5 if lado == "derecha" else -0.5
+            error = norm(yaw_actual - yaw_inicio)
             if abs(error) >= math.radians(90):
-
+                t.angular.z = 0.0
                 estado = "FINAL"
 
-        # FINAL
-
         elif estado == "FINAL":
+            rospy.loginfo("Finalizado")
+            t.linear.x = 0.2
 
-            debug_estado("FINAL")
-
-            t.linear.x = vel_lineal
-            t.angular.z = 0.0
+        f_min = min(frontal) if frontal else 0.0
+        l_min = min(lateral) if lateral else 0.0
+        
+        rospy.loginfo(
+            f"| ODOM: x={pos_actual[0]:.2f} y={pos_actual[1]:.2f} yaw={yaw_actual:.2f} "
+            f"| CMD: v={t.linear.x:.2f} w={t.angular.z:.2f} "
+            f"| SCAN: Front_min={f_min:.2f} Lat_min={l_min:.2f}"
+        )
 
         pub.publish(t)
         rate.sleep()
 
 
 if __name__ == "__main__":
-
     parking()
